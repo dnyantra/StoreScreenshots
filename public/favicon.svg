@@ -1,0 +1,105 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#F0F4FF"/>
+      <stop offset="100%" style="stop-color:#E8EEFF"/>
+    </linearGradient>
+    <linearGradient id="screenGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#4A90FF"/>
+      <stop offset="100%" style="stop-color:#2563EB"/>
+    </linearGradient>
+    <linearGradient id="screenGrad2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#7CB9FF"/>
+      <stop offset="100%" style="stop-color:#4A90FF"/>
+    </linearGradient>
+    <linearGradient id="starGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#FFB800"/>
+      <stop offset="100%" style="stop-color:#FF8C00"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="16" flood-color="#2563EB" flood-opacity="0.2"/>
+    </filter>
+    <filter id="softShadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="#000000" flood-opacity="0.1"/>
+    </filter>
+    <clipPath id="roundedBg">
+      <rect width="1024" height="1024" rx="230" ry="230"/>
+    </clipPath>
+  </defs>
+
+  <!-- App icon background - light theme -->
+  <rect width="1024" height="1024" rx="230" fill="url(#bgGrad)"/>
+
+  <!-- Subtle grid pattern -->
+  <g opacity="0.06">
+    <line x1="0" y1="256" x2="1024" y2="256" stroke="#2563EB" stroke-width="1.5"/>
+    <line x1="0" y1="512" x2="1024" y2="512" stroke="#2563EB" stroke-width="1.5"/>
+    <line x1="0" y1="768" x2="1024" y2="768" stroke="#2563EB" stroke-width="1.5"/>
+    <line x1="256" y1="0" x2="256" y2="1024" stroke="#2563EB" stroke-width="1.5"/>
+    <line x1="512" y1="0" x2="512" y2="1024" stroke="#2563EB" stroke-width="1.5"/>
+    <line x1="768" y1="0" x2="768" y2="1024" stroke="#2563EB" stroke-width="1.5"/>
+  </g>
+
+  <!-- Back screenshot (slightly tilted, offset) -->
+  <g transform="translate(540, 480) rotate(6)" filter="url(#softShadow)">
+    <rect x="-145" y="-195" width="290" height="390" rx="20" fill="url(#screenGrad2)" opacity="0.7"/>
+    <!-- Mini UI elements on back screen -->
+    <rect x="-115" y="-165" width="180" height="12" rx="6" fill="white" opacity="0.5"/>
+    <rect x="-115" y="-140" width="120" height="8" rx="4" fill="white" opacity="0.3"/>
+    <rect x="-115" y="-100" width="230" height="130" rx="10" fill="white" opacity="0.2"/>
+  </g>
+
+  <!-- Main front screenshot -->
+  <g transform="translate(460, 510)" filter="url(#shadow)">
+    <rect x="-160" y="-210" width="320" height="420" rx="24" fill="url(#screenGrad)"/>
+
+    <!-- Screen content - status bar -->
+    <rect x="-140" y="-188" width="280" height="3" rx="1.5" fill="white" opacity="0.3"/>
+
+    <!-- App icon preview area -->
+    <rect x="-120" y="-175" width="240" height="150" rx="14" fill="white" opacity="0.15"/>
+
+    <!-- Tiny app icon inside -->
+    <rect x="-40" y="-155" width="80" height="80" rx="18" fill="white" opacity="0.9"/>
+    <circle cx="0" cy="-115" r="20" fill="#4A90FF" opacity="0.8"/>
+
+    <!-- Screenshot label -->
+    <rect x="-100" y="-55" width="200" height="10" rx="5" fill="white" opacity="0.6"/>
+    <rect x="-70" y="-36" width="140" height="8" rx="4" fill="white" opacity="0.35"/>
+
+    <!-- Bottom content bars -->
+    <rect x="-120" y="10" width="240" height="8" rx="4" fill="white" opacity="0.4"/>
+    <rect x="-120" y="30" width="180" height="8" rx="4" fill="white" opacity="0.25"/>
+    <rect x="-120" y="50" width="210" height="8" rx="4" fill="white" opacity="0.3"/>
+
+    <!-- Star rating -->
+    <g transform="translate(-40, 110)">
+      <!-- 5 stars -->
+      <text x="-30" y="8" font-size="22" fill="url(#starGrad)" font-family="system-ui">★★★★★</text>
+    </g>
+  </g>
+
+  <!-- Magic sparkle / star accent top right -->
+  <g transform="translate(720, 260)">
+    <circle cx="0" cy="0" r="#FFB800" opacity="0.9"/>
+    <line x1="0" y1="-22" x2="0" y2="22" stroke="#FFB800" stroke-width="3" stroke-linecap="round"/>
+    <line x1="-22" y1="0" x2="22" y2="0" stroke="#FFB800" stroke-width="3" stroke-linecap="round"/>
+    <line x1="-15" y1="-15" x2="15" y2="15" stroke="#FFB800" stroke-width="2" stroke-linecap="round" opacity="0.6"/>
+    <line x1="15" y1="-15" x2="-15" y2="15" stroke="#FFB800" stroke-width="2" stroke-linecap="round" opacity="0.6"/>
+  </g>
+
+  <!-- Small sparkle bottom left -->
+  <g transform="translate(300, 720)">
+    <circle cx="0" cy="0" r="7" fill="#4A90FF" opacity="0.5"/>
+    <line x1="0" y1="-14" x2="0" y2="14" stroke="#4A90FF" stroke-width="2" stroke-linecap="round" opacity="0.5"/>
+    <line x1="-14" y1="0" x2="14" y2="0" stroke="#4A90FF" stroke-width="2" stroke-linecap="round" opacity="0.5"/>
+  </g>
+
+  <!-- Upload arrow accent -->
+  <g transform="translate(310, 340)" opacity="0.85">
+    <circle cx="0" cy="0" r="42" fill="#2563EB"/>
+    <path d="M0 18 L0 -8 M-14 4 L0 -10 L14 4" stroke="white" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    <line x1="-16" y1="20" x2="16" y2="20" stroke="white" stroke-width="4" stroke-linecap="round"/>
+  </g>
+
+</svg>
