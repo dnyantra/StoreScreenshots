@@ -1,10 +1,26 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Download, Image as ImageIcon, Loader2, Palette, Square, Layers, Maximize, Upload, Plus, Trash2, X, Github, Type } from 'lucide-react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { Download, Image as ImageIcon, Loader2, Palette, Square, Layers, Maximize, Upload, Plus, Trash2, X, Github, Type, Crop } from 'lucide-react';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 
 interface Size { label: string; width: number; height: number; }
 interface StoreType { id: string; label: string; sizes: Size[]; }
+
+interface PopOutRegion {
+  id: string;
+  x: number; y: number; width: number; height: number;
+  borderRadius: number; elevation: number;
+  offsetX: number; offsetY: number;
+  scale: number;
+}
+
+const POP_OUT_ELEVATIONS = [
+  { label: 'None', value: 0 },
+  { label: 'Small', value: 10 },
+  { label: 'Medium', value: 20 },
+  { label: 'Large', value: 40 },
+  { label: 'Extra Large', value: 80 },
+];
 
 const STORE_TYPES: StoreType[] = [
   { id: 'ios', label: 'iOS', sizes: [
@@ -154,7 +170,75 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Pop-out region state
+  const [popOutRegions, setPopOutRegions] = useState<PopOutRegion[][]>([]);
+  const [isPopOutMode, setIsPopOutMode] = useState(false);
+  const [selectedPopOutId, setSelectedPopOutId] = useState<string | null>(null);
+  const [dragMode, setDragMode] = useState<'none' | 'draw' | 'move' | 'resize'>('none');
+  const [drawStart, setDrawStart] = useState<{ fx: number; fy: number } | null>(null);
+  const [currentDraw, setCurrentDraw] = useState<{ fx: number; fy: number } | null>(null);
+  const [resizeHandle, setResizeHandle] = useState<string | null>(null);
+  const [dragOffset, setDragOffset] = useState<{ dx: number; dy: number }>({ dx: 0, dy: 0 });
+  const previewImageRef = useRef<HTMLImageElement>(null);
+  const outerPreviewRef = useRef<HTMLDivElement>(null);
+  const [imageRect, setImageRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+
   useEffect(() => { saveCustomSizes(customSizes); }, [customSizes]);
+
+  // Compute image rect relative to outer container
+  const computeImageRect = useCallback(() => {
+    if (!previewImageRef.current || !outerPreviewRef.current) return;
+    const outerRect = outerPreviewRef.current.getBoundingClientRect();
+    const imgRect = previewImageRef.current.getBoundingClientRect();
+    setImageRect({
+      left: imgRect.left - outerRect.left,
+      top: imgRect.top - outerRect.top,
+      width: imgRect.width,
+      height: imgRect.height,
+    });
+  }, []);
+
+  // ResizeObserver to keep pop-out positions accurate
+  useEffect(() => {
+    if (!outerPreviewRef.current) return;
+    const observer = new ResizeObserver(() => computeImageRect());
+    observer.observe(outerPreviewRef.current);
+    return () => observer.disconnect();
+  }, [computeImageRect]);
+
+  // Deselect and exit drag on image change
+  useEffect(() => {
+    setSelectedPopOutId(null);
+    setDragMode('none');
+    setDrawStart(null);
+    setCurrentDraw(null);
+    computeImageRect();
+  }, [activeImageIndex, computeImageRect]);
+
+  // Keyboard handler for Delete/Escape
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!isPopOutMode) return;
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedPopOutId) {
+        e.preventDefault();
+        setPopOutRegions(prev => {
+          const updated = [...prev];
+          updated[activeImageIndex] = (updated[activeImageIndex] ?? []).filter(r => r.id !== selectedPopOutId);
+          return updated;
+        });
+        setSelectedPopOutId(null);
+      }
+      if (e.key === 'Escape') {
+        setSelectedPopOutId(null);
+        setIsPopOutMode(false);
+        setDragMode('none');
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isPopOutMode, selectedPopOutId, activeImageIndex]);
 
   const handleStoreTypeChange = (id: string) => {
     setSelectedStoreTypeId(id);
@@ -202,13 +286,175 @@ export default function App() {
       .then((dataUrls) => {
         setUploadedImages((prev) => { setActiveImageIndex(prev.length); return [...prev, ...dataUrls]; });
         setCaptionTexts((prev) => [...prev, ...dataUrls.map(() => '')]);
+        setPopOutRegions((prev) => [...prev, ...dataUrls.map(() => [] as PopOutRegion[])]);
         setError(null);
         event.target.value = '';
       })
       .catch(() => setError('Failed to read one or more files'));
   };
 
-  const renderImageToCanvas = (imageDataUrl: string, captionText?: string): Promise<string> => {
+  // --- Pop-out region helpers ---
+  const currentRegions = popOutRegions[activeImageIndex] ?? [];
+
+  const pageToImageFraction = (clientX: number, clientY: number): { fx: number; fy: number } | null => {
+    if (!previewImageRef.current) return null;
+    const r = previewImageRef.current.getBoundingClientRect();
+    return {
+      fx: Math.max(0, Math.min(1, (clientX - r.left) / r.width)),
+      fy: Math.max(0, Math.min(1, (clientY - r.top) / r.height)),
+    };
+  };
+
+  const getHandleAtPoint = (fx: number, fy: number, region: PopOutRegion): string | null => {
+    if (!previewImageRef.current) return null;
+    const r = previewImageRef.current.getBoundingClientRect();
+    const hx = 8 / r.width;
+    const hy = 8 / r.height;
+    const handles: Record<string, { x: number; y: number }> = {
+      nw: { x: region.x, y: region.y },
+      ne: { x: region.x + region.width, y: region.y },
+      sw: { x: region.x, y: region.y + region.height },
+      se: { x: region.x + region.width, y: region.y + region.height },
+      n: { x: region.x + region.width / 2, y: region.y },
+      s: { x: region.x + region.width / 2, y: region.y + region.height },
+      w: { x: region.x, y: region.y + region.height / 2 },
+      e: { x: region.x + region.width, y: region.y + region.height / 2 },
+    };
+    for (const [name, pos] of Object.entries(handles)) {
+      if (Math.abs(fx - pos.x) < hx && Math.abs(fy - pos.y) < hy) return name;
+    }
+    return null;
+  };
+
+  const addPopOutRegion = (region: PopOutRegion) => {
+    setPopOutRegions(prev => {
+      const updated = [...prev];
+      while (updated.length <= activeImageIndex) updated.push([]);
+      updated[activeImageIndex] = [...updated[activeImageIndex], region];
+      return updated;
+    });
+  };
+
+  const updatePopOutRegion = (id: string, updates: Partial<PopOutRegion>) => {
+    setPopOutRegions(prev => {
+      const updated = [...prev];
+      const regions = [...(updated[activeImageIndex] ?? [])];
+      const idx = regions.findIndex(r => r.id === id);
+      if (idx >= 0) regions[idx] = { ...regions[idx], ...updates };
+      updated[activeImageIndex] = regions;
+      return updated;
+    });
+  };
+
+  const deletePopOutRegion = (id: string) => {
+    setPopOutRegions(prev => {
+      const updated = [...prev];
+      updated[activeImageIndex] = (updated[activeImageIndex] ?? []).filter(r => r.id !== id);
+      return updated;
+    });
+  };
+
+  // --- Mouse event handlers for pop-out drawing/editing ---
+  const handlePopOutMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const pt = pageToImageFraction(e.clientX, e.clientY);
+    if (!pt) return;
+
+    // Check selected region for resize handle
+    if (selectedPopOutId) {
+      const sel = currentRegions.find(r => r.id === selectedPopOutId);
+      if (sel) {
+        const handle = getHandleAtPoint(pt.fx, pt.fy, sel);
+        if (handle) {
+          setDragMode('resize');
+          setResizeHandle(handle);
+          setDrawStart(pt);
+          return;
+        }
+      }
+    }
+
+    // Check if clicking inside any region (for move)
+    for (const region of [...currentRegions].reverse()) {
+      if (pt.fx >= region.x && pt.fx <= region.x + region.width &&
+          pt.fy >= region.y && pt.fy <= region.y + region.height) {
+        setSelectedPopOutId(region.id);
+        setDragMode('move');
+        setDragOffset({ dx: pt.fx - region.x, dy: pt.fy - region.y });
+        return;
+      }
+    }
+
+    // Start drawing new region
+    setSelectedPopOutId(null);
+    setDragMode('draw');
+    setDrawStart(pt);
+    setCurrentDraw(pt);
+  };
+
+  const handlePopOutMouseMove = (e: React.MouseEvent) => {
+    if (dragMode === 'none') return;
+    const pt = pageToImageFraction(e.clientX, e.clientY);
+    if (!pt) return;
+
+    if (dragMode === 'draw') {
+      setCurrentDraw(pt);
+      return;
+    }
+
+    if (dragMode === 'move' && selectedPopOutId) {
+      const region = currentRegions.find(r => r.id === selectedPopOutId);
+      if (!region) return;
+      let nx = pt.fx - dragOffset.dx;
+      let ny = pt.fy - dragOffset.dy;
+      nx = Math.max(0, Math.min(1 - region.width, nx));
+      ny = Math.max(0, Math.min(1 - region.height, ny));
+      updatePopOutRegion(selectedPopOutId, { x: nx, y: ny });
+      return;
+    }
+
+    if (dragMode === 'resize' && selectedPopOutId && drawStart && resizeHandle) {
+      const region = currentRegions.find(r => r.id === selectedPopOutId);
+      if (!region) return;
+      let { x, y, width, height } = region;
+      const right = x + width;
+      const bottom = y + height;
+
+      if (resizeHandle.includes('w')) { x = Math.min(pt.fx, right - 0.02); width = right - x; }
+      if (resizeHandle.includes('e')) { width = Math.max(0.02, pt.fx - x); }
+      if (resizeHandle.includes('n')) { y = Math.min(pt.fy, bottom - 0.02); height = bottom - y; }
+      if (resizeHandle.includes('s')) { height = Math.max(0.02, pt.fy - y); }
+
+      updatePopOutRegion(selectedPopOutId, { x, y, width, height });
+    }
+  };
+
+  const handlePopOutMouseUp = () => {
+    if (dragMode === 'draw' && drawStart && currentDraw) {
+      const x = Math.min(drawStart.fx, currentDraw.fx);
+      const y = Math.min(drawStart.fy, currentDraw.fy);
+      const w = Math.abs(currentDraw.fx - drawStart.fx);
+      const h = Math.abs(currentDraw.fy - drawStart.fy);
+      if (w > 0.02 && h > 0.02) {
+        const newRegion: PopOutRegion = {
+          id: crypto.randomUUID(),
+          x, y, width: w, height: h,
+          borderRadius: 16,
+          elevation: 40,
+          offsetX: 0, offsetY: 0,
+          scale: 1.3,
+        };
+        addPopOutRegion(newRegion);
+        setSelectedPopOutId(newRegion.id);
+      }
+    }
+    setDragMode('none');
+    setDrawStart(null);
+    setCurrentDraw(null);
+    setResizeHandle(null);
+  };
+
+  const renderImageToCanvas = (imageDataUrl: string, captionText?: string, regions?: PopOutRegion[]): Promise<string> => {
     return new Promise((resolve, reject) => {
       const canvas = document.createElement('canvas');
       const ctx = canvas.getContext('2d');
@@ -341,6 +587,47 @@ export default function App() {
           }
         }
 
+        // Draw pop-out regions
+        if (regions && regions.length > 0) {
+          for (const region of regions) {
+            const s = region.scale;
+            const sx = region.x * img.width;
+            const sy = region.y * img.height;
+            const sw = region.width * img.width;
+            const sh = region.height * img.height;
+            const baseW = region.width * drawWidth;
+            const baseH = region.height * drawHeight;
+            const dw = baseW * s;
+            const dh = baseH * s;
+            // Center scaled pop-out on region center, then apply offset
+            const cx = drawX + (region.x + region.width / 2) * drawWidth;
+            const cy = drawY + (region.y + region.height / 2) * drawHeight;
+            const dx = cx - dw / 2 + region.offsetX * drawWidth;
+            const dy = cy - dh / 2 + region.offsetY * drawHeight;
+            const r = region.borderRadius * s * (canvas.width / 1440);
+
+            if (region.elevation > 0) {
+              ctx.save();
+              ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
+              ctx.shadowBlur = region.elevation;
+              ctx.shadowOffsetX = 0;
+              ctx.shadowOffsetY = region.elevation / 2;
+              ctx.beginPath();
+              ctx.roundRect(dx, dy, dw, dh, r);
+              ctx.fillStyle = '#fff';
+              ctx.fill();
+              ctx.restore();
+            }
+
+            ctx.save();
+            ctx.beginPath();
+            ctx.roundRect(dx, dy, dw, dh, r);
+            ctx.clip();
+            ctx.drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh);
+            ctx.restore();
+          }
+        }
+
         resolve(canvas.toDataURL('image/png'));
       };
       img.onerror = () => reject(new Error('Failed to load image'));
@@ -361,7 +648,7 @@ export default function App() {
 
   const handleDownload = async () => {
     if (!activeImage) return;
-    const dataUrl = await renderImageToCanvas(activeImage, captionTexts[activeImageIndex]);
+    const dataUrl = await renderImageToCanvas(activeImage, captionTexts[activeImageIndex], popOutRegions[activeImageIndex]);
     const baseName = customFileName.trim() || `screenshot-${selectedSize.width}x${selectedSize.height}`;
     const link = document.createElement('a');
     link.download = `${baseName}.png`;
@@ -379,7 +666,7 @@ export default function App() {
       const zip = new JSZip();
       const baseName = customFileName.trim() || `screenshot-${selectedSize.width}x${selectedSize.height}`;
       for (let i = 0; i < uploadedImages.length; i++) {
-        const dataUrl = await renderImageToCanvas(uploadedImages[i], captionTexts[i]);
+        const dataUrl = await renderImageToCanvas(uploadedImages[i], captionTexts[i], popOutRegions[i]);
         const base64 = dataUrl.split(',')[1];
         zip.file(`${baseName}-${i + 1}.png`, base64, { base64: true });
       }
@@ -401,6 +688,7 @@ export default function App() {
       return updated;
     });
     setCaptionTexts((prev) => prev.filter((_, i) => i !== index));
+    setPopOutRegions((prev) => prev.filter((_, i) => i !== index));
   };
 
   const handleCaptionChange = (index: number, text: string) => {
@@ -452,7 +740,7 @@ export default function App() {
                 <div className="flex items-center justify-between">
                   <span className="text-xs text-neutral-500">{uploadedImages.length} image{uploadedImages.length !== 1 ? 's' : ''}</span>
                   <button
-                    onClick={() => { setUploadedImages([]); setActiveImageIndex(0); setCaptionTexts([]); }}
+                    onClick={() => { setUploadedImages([]); setActiveImageIndex(0); setCaptionTexts([]); setPopOutRegions([]); }}
                     className="text-xs text-neutral-400 hover:text-red-500 transition-colors"
                   >
                     Clear all
@@ -763,6 +1051,118 @@ export default function App() {
                 ))}
               </select>
             </div>
+
+            {/* Pop-Out Regions */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-neutral-700 flex items-center gap-2">
+                <Crop className="w-4 h-4" /> Pop-Out Regions
+              </label>
+              <button
+                onClick={() => { setIsPopOutMode(!isPopOutMode); if (isPopOutMode) { setSelectedPopOutId(null); setDragMode('none'); } }}
+                disabled={!activeImage}
+                className={`w-full py-2 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2 ${
+                  isPopOutMode
+                    ? 'bg-indigo-600 text-white hover:bg-indigo-700'
+                    : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200 border border-neutral-300'
+                } disabled:opacity-50 disabled:cursor-not-allowed`}
+              >
+                <Crop className="w-4 h-4" />
+                {isPopOutMode ? 'Exit Pop-Out Mode' : 'Draw Pop-Out Region'}
+              </button>
+              {isPopOutMode && (
+                <p className="text-xs text-neutral-500 leading-relaxed">
+                  Click and drag on the preview image to draw a pop-out region. Click a region to select, drag to move, use handles to resize. Press Delete to remove.
+                </p>
+              )}
+              {currentRegions.length > 0 && (
+                <div className="space-y-1.5">
+                  <span className="text-xs text-neutral-500">{currentRegions.length} region{currentRegions.length !== 1 ? 's' : ''}</span>
+                  {currentRegions.map((region, i) => (
+                    <div
+                      key={region.id}
+                      onClick={() => { setSelectedPopOutId(region.id); setIsPopOutMode(true); }}
+                      className={`flex items-center justify-between px-3 py-2 rounded-lg border text-xs cursor-pointer transition-colors ${
+                        region.id === selectedPopOutId
+                          ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
+                          : 'border-neutral-200 bg-neutral-50 text-neutral-700 hover:bg-neutral-100'
+                      }`}
+                    >
+                      <span className="font-medium">Region {i + 1}</span>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); deletePopOutRegion(region.id); if (selectedPopOutId === region.id) setSelectedPopOutId(null); }}
+                        className="p-1 text-neutral-400 hover:text-red-500 transition-colors rounded"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {selectedPopOutId && (() => {
+                const sel = currentRegions.find(r => r.id === selectedPopOutId);
+                if (!sel) return null;
+                return (
+                  <div className="space-y-3 pt-2 border-t border-neutral-200">
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs text-neutral-500">Corner Radius</span>
+                        <span className="text-xs text-neutral-500 font-mono">{sel.borderRadius}px</span>
+                      </div>
+                      <input
+                        type="range" min={0} max={48} value={sel.borderRadius}
+                        onChange={(e) => updatePopOutRegion(sel.id, { borderRadius: Number(e.target.value) })}
+                        className="w-full accent-indigo-600"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <span className="text-xs text-neutral-500">Shadow</span>
+                      <select
+                        value={sel.elevation}
+                        onChange={(e) => updatePopOutRegion(sel.id, { elevation: Number(e.target.value) })}
+                        className="w-full px-3 py-2 border border-neutral-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500"
+                      >
+                        {POP_OUT_ELEVATIONS.map(el => (
+                          <option key={el.label} value={el.value}>{el.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs text-neutral-500">Scale</span>
+                        <span className="text-xs text-neutral-500 font-mono">{sel.scale.toFixed(1)}x</span>
+                      </div>
+                      <input
+                        type="range" min={10} max={30} value={Math.round(sel.scale * 10)}
+                        onChange={(e) => updatePopOutRegion(sel.id, { scale: Number(e.target.value) / 10 })}
+                        className="w-full accent-indigo-600"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs text-neutral-500">Offset X</span>
+                        <span className="text-xs text-neutral-500 font-mono">{Math.round(sel.offsetX * 100)}%</span>
+                      </div>
+                      <input
+                        type="range" min={-50} max={50} value={Math.round(sel.offsetX * 100)}
+                        onChange={(e) => updatePopOutRegion(sel.id, { offsetX: Number(e.target.value) / 100 })}
+                        className="w-full accent-indigo-600"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs text-neutral-500">Offset Y</span>
+                        <span className="text-xs text-neutral-500 font-mono">{Math.round(sel.offsetY * 100)}%</span>
+                      </div>
+                      <input
+                        type="range" min={-50} max={50} value={Math.round(sel.offsetY * 100)}
+                        onChange={(e) => updatePopOutRegion(sel.id, { offsetY: Number(e.target.value) / 100 })}
+                        className="w-full accent-indigo-600"
+                      />
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
           </div>
         </div>
 
@@ -848,78 +1248,188 @@ export default function App() {
             dnyantra.com
           </a>
         </div>
-        {/* Preview Container */}
+        {/* Preview Container — outer wrapper (NO overflow-hidden so pop-outs can escape) */}
         <div
-          className="relative rounded-xl overflow-hidden shadow-sm transition-all duration-500 flex items-center justify-center"
+          ref={outerPreviewRef}
+          className="relative shadow-sm transition-all duration-500"
           style={{
-            background: selectedBackground.value,
             aspectRatio: `${selectedSize.width} / ${selectedSize.height}`,
             width: '100%',
             maxHeight: '75vh',
             maxWidth: `min(100%, calc(75vh * ${selectedSize.width / selectedSize.height}))`,
           }}
         >
-          {activeImage ? (
-            <div
-              className="relative transition-all duration-300"
-              style={{
-                padding: `${selectedPadding.value / 4}px`,
-                width: '100%',
-                height: '100%',
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                justifyContent: 'center'
-              }}
-            >
-              {activeCaption && captionPosition === 'above' && (
-                <p style={{
-                  fontFamily: CAPTION_FONT_FAMILY,
-                  fontSize: `${captionFontSize / 4}px`,
-                  fontWeight: captionFontWeight,
-                  color: captionColor,
-                  textAlign: 'center',
-                  margin: 0,
-                  paddingBottom: `${captionFontSize / 8}px`,
-                  lineHeight: 1.2,
-                  wordBreak: 'break-word',
-                  maxWidth: '90%',
-                  whiteSpace: 'pre-wrap',
-                }}>{activeCaption}</p>
-              )}
-              <img
-                src={activeImage}
-                alt="Preview"
-                className="max-w-full object-contain transition-all duration-300"
+          {/* Inner clipped container */}
+          <div
+            className="absolute inset-0 rounded-xl overflow-hidden flex items-center justify-center"
+            style={{ background: selectedBackground.value }}
+          >
+            {activeImage ? (
+              <div
+                className="relative transition-all duration-300"
                 style={{
-                  maxHeight: activeCaption ? '80%' : '100%',
-                  borderRadius: `${selectedBorderRadius.value}px`,
-                  boxShadow: selectedElevation.value > 0 ? `0 ${selectedElevation.value / 2}px ${selectedElevation.value}px rgba(0,0,0,0.4)` : 'none'
+                  padding: `${selectedPadding.value / 4}px`,
+                  width: '100%',
+                  height: '100%',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center'
+                }}
+              >
+                {activeCaption && captionPosition === 'above' && (
+                  <p style={{
+                    fontFamily: CAPTION_FONT_FAMILY,
+                    fontSize: `${captionFontSize / 4}px`,
+                    fontWeight: captionFontWeight,
+                    color: captionColor,
+                    textAlign: 'center',
+                    margin: 0,
+                    paddingBottom: `${captionFontSize / 8}px`,
+                    lineHeight: 1.2,
+                    wordBreak: 'break-word',
+                    maxWidth: '90%',
+                    whiteSpace: 'pre-wrap',
+                  }}>{activeCaption}</p>
+                )}
+                <img
+                  ref={previewImageRef}
+                  src={activeImage}
+                  alt="Preview"
+                  className="max-w-full object-contain transition-all duration-300"
+                  onLoad={computeImageRect}
+                  style={{
+                    maxHeight: activeCaption ? '80%' : '100%',
+                    borderRadius: `${selectedBorderRadius.value}px`,
+                    boxShadow: selectedElevation.value > 0 ? `0 ${selectedElevation.value / 2}px ${selectedElevation.value}px rgba(0,0,0,0.4)` : 'none'
+                  }}
+                />
+                {activeCaption && captionPosition === 'below' && (
+                  <p style={{
+                    fontFamily: CAPTION_FONT_FAMILY,
+                    fontSize: `${captionFontSize / 4}px`,
+                    fontWeight: captionFontWeight,
+                    color: captionColor,
+                    textAlign: 'center',
+                    margin: 0,
+                    paddingTop: `${captionFontSize / 8}px`,
+                    lineHeight: 1.2,
+                    wordBreak: 'break-word',
+                    maxWidth: '90%',
+                    whiteSpace: 'pre-wrap',
+                  }}>{activeCaption}</p>
+                )}
+              </div>
+            ) : (
+              <div className="text-center text-white/70 flex flex-col items-center">
+                <ImageIcon className="w-16 h-16 mb-4 opacity-50" />
+                <p className="font-medium text-lg">No image selected</p>
+                <p className="text-sm opacity-75 mt-1">Upload an image to get started</p>
+              </div>
+            )}
+
+            {/* Drawing overlay (when pop-out mode active) */}
+            {isPopOutMode && activeImage && (
+              <div
+                className="absolute inset-0 z-10"
+                style={{ cursor: dragMode === 'move' ? 'grabbing' : 'crosshair' }}
+                onMouseDown={handlePopOutMouseDown}
+                onMouseMove={handlePopOutMouseMove}
+                onMouseUp={handlePopOutMouseUp}
+                onMouseLeave={handlePopOutMouseUp}
+              >
+                {/* Drawing-in-progress rectangle */}
+                {dragMode === 'draw' && drawStart && currentDraw && imageRect && (
+                  <div
+                    className="absolute border-2 border-dashed border-white/80 bg-white/10 pointer-events-none"
+                    style={{
+                      left: imageRect.left + Math.min(drawStart.fx, currentDraw.fx) * imageRect.width,
+                      top: imageRect.top + Math.min(drawStart.fy, currentDraw.fy) * imageRect.height,
+                      width: Math.abs(currentDraw.fx - drawStart.fx) * imageRect.width,
+                      height: Math.abs(currentDraw.fy - drawStart.fy) * imageRect.height,
+                    }}
+                  />
+                )}
+
+                {/* Existing region outlines */}
+                {imageRect && currentRegions.map(region => (
+                  <div key={region.id}>
+                    <div
+                      className={`absolute border-2 ${region.id === selectedPopOutId ? 'border-indigo-400' : 'border-white/60'} pointer-events-none`}
+                      style={{
+                        left: imageRect.left + region.x * imageRect.width,
+                        top: imageRect.top + region.y * imageRect.height,
+                        width: region.width * imageRect.width,
+                        height: region.height * imageRect.height,
+                        borderRadius: region.borderRadius,
+                      }}
+                    />
+                    {/* Resize handles for selected region */}
+                    {region.id === selectedPopOutId && (() => {
+                      const rx = imageRect.left + region.x * imageRect.width;
+                      const ry = imageRect.top + region.y * imageRect.height;
+                      const rw = region.width * imageRect.width;
+                      const rh = region.height * imageRect.height;
+                      const handles = [
+                        { x: 0, y: 0, cursor: 'nw-resize' },
+                        { x: rw, y: 0, cursor: 'ne-resize' },
+                        { x: 0, y: rh, cursor: 'sw-resize' },
+                        { x: rw, y: rh, cursor: 'se-resize' },
+                        { x: rw / 2, y: 0, cursor: 'n-resize' },
+                        { x: rw / 2, y: rh, cursor: 's-resize' },
+                        { x: 0, y: rh / 2, cursor: 'w-resize' },
+                        { x: rw, y: rh / 2, cursor: 'e-resize' },
+                      ];
+                      return handles.map((h, i) => (
+                        <div
+                          key={i}
+                          className="absolute w-2.5 h-2.5 bg-white border border-indigo-400 rounded-sm pointer-events-none"
+                          style={{
+                            left: rx + h.x - 5,
+                            top: ry + h.y - 5,
+                          }}
+                        />
+                      ));
+                    })()}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Pop-out elements (OUTSIDE the clipped inner container) */}
+          {activeImage && imageRect && currentRegions.map(region => {
+            const s = region.scale;
+            const baseW = region.width * imageRect.width;
+            const baseH = region.height * imageRect.height;
+            const popWidth = baseW * s;
+            const popHeight = baseH * s;
+            // Center the scaled pop-out on the region center, then apply offset
+            const cx = imageRect.left + (region.x + region.width / 2) * imageRect.width;
+            const cy = imageRect.top + (region.y + region.height / 2) * imageRect.height;
+            const popLeft = cx - popWidth / 2 + region.offsetX * imageRect.width;
+            const popTop = cy - popHeight / 2 + region.offsetY * imageRect.height;
+            return (
+              <div
+                key={region.id}
+                className="absolute z-20 pointer-events-none"
+                style={{
+                  left: popLeft,
+                  top: popTop,
+                  width: popWidth,
+                  height: popHeight,
+                  borderRadius: region.borderRadius * s,
+                  boxShadow: region.elevation > 0
+                    ? `0 ${region.elevation / 2}px ${region.elevation}px rgba(0,0,0,0.5)`
+                    : 'none',
+                  backgroundImage: `url(${activeImage})`,
+                  backgroundSize: `${imageRect.width * s}px ${imageRect.height * s}px`,
+                  backgroundPosition: `-${region.x * imageRect.width * s}px -${region.y * imageRect.height * s}px`,
+                  overflow: 'hidden',
                 }}
               />
-              {activeCaption && captionPosition === 'below' && (
-                <p style={{
-                  fontFamily: CAPTION_FONT_FAMILY,
-                  fontSize: `${captionFontSize / 4}px`,
-                  fontWeight: captionFontWeight,
-                  color: captionColor,
-                  textAlign: 'center',
-                  margin: 0,
-                  paddingTop: `${captionFontSize / 8}px`,
-                  lineHeight: 1.2,
-                  wordBreak: 'break-word',
-                  maxWidth: '90%',
-                  whiteSpace: 'pre-wrap',
-                }}>{activeCaption}</p>
-              )}
-            </div>
-          ) : (
-            <div className="text-center text-white/70 flex flex-col items-center">
-              <ImageIcon className="w-16 h-16 mb-4 opacity-50" />
-              <p className="font-medium text-lg">No image selected</p>
-              <p className="text-sm opacity-75 mt-1">Upload an image to get started</p>
-            </div>
-          )}
+            );
+          })}
         </div>
       </div>
     </div>
