@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Download, Image as ImageIcon, Loader2, Palette, Square, Layers, Maximize, Upload, Plus, Trash2, X } from 'lucide-react';
+import { Download, Image as ImageIcon, Loader2, Palette, Square, Layers, Maximize, Upload, Plus, Trash2, X, Github, Type } from 'lucide-react';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 
@@ -117,6 +117,8 @@ const PADDINGS = [
   { label: 'Extra Large', value: 256 },
 ];
 
+const CAPTION_FONT_FAMILY = "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', system-ui, sans-serif";
+
 export default function App() {
   const [uploadedImages, setUploadedImages] = useState<string[]>([]);
   const [activeImageIndex, setActiveImageIndex] = useState<number>(0);
@@ -138,6 +140,13 @@ export default function App() {
   const [selectedElevation, setSelectedElevation] = useState(ELEVATIONS[3]);
   const [selectedBorderRadius, setSelectedBorderRadius] = useState(BORDER_RADII[2]);
   const [selectedPadding, setSelectedPadding] = useState(PADDINGS[2]);
+
+  const [captionTexts, setCaptionTexts] = useState<string[]>([]);
+  const [captionPosition, setCaptionPosition] = useState<'above' | 'below'>('above');
+  const [captionFontSize, setCaptionFontSize] = useState<number>(64);
+  const [captionFontWeight, setCaptionFontWeight] = useState<string>('bold');
+  const [captionColor, setCaptionColor] = useState<string>('#ffffff');
+  const activeCaption = captionTexts[activeImageIndex] ?? '';
 
   const [showDonation, setShowDonation] = useState(false);
   const [hasShownDonation, setHasShownDonation] = useState(false);
@@ -192,13 +201,14 @@ export default function App() {
     Promise.all(readers)
       .then((dataUrls) => {
         setUploadedImages((prev) => { setActiveImageIndex(prev.length); return [...prev, ...dataUrls]; });
+        setCaptionTexts((prev) => [...prev, ...dataUrls.map(() => '')]);
         setError(null);
         event.target.value = '';
       })
       .catch(() => setError('Failed to read one or more files'));
   };
 
-  const renderImageToCanvas = (imageDataUrl: string): Promise<string> => {
+  const renderImageToCanvas = (imageDataUrl: string, captionText?: string): Promise<string> => {
     return new Promise((resolve, reject) => {
       const canvas = document.createElement('canvas');
       const ctx = canvas.getContext('2d');
@@ -206,6 +216,26 @@ export default function App() {
 
       canvas.width = selectedSize.width;
       canvas.height = selectedSize.height;
+
+      // Word-wrap helper
+      const wrapText = (text: string, maxWidth: number): string[] => {
+        const lines: string[] = [];
+        for (const paragraph of text.split('\n')) {
+          const words = paragraph.split(' ');
+          let currentLine = '';
+          for (const word of words) {
+            const testLine = currentLine ? `${currentLine} ${word}` : word;
+            if (ctx.measureText(testLine).width > maxWidth && currentLine) {
+              lines.push(currentLine);
+              currentLine = word;
+            } else {
+              currentLine = testLine;
+            }
+          }
+          lines.push(currentLine);
+        }
+        return lines;
+      };
 
       // Draw background
       if (selectedBackground.value.startsWith('linear-gradient')) {
@@ -225,8 +255,22 @@ export default function App() {
 
       const img = new Image();
       img.onload = () => {
+        const caption = captionText?.trim() || '';
+
+        // Measure caption height if present
+        let captionTotalHeight = 0;
+        let captionLines: string[] = [];
+        const lineHeight = captionFontSize * 1.2;
+        const captionPadding = captionFontSize * 0.5;
+        if (caption) {
+          ctx.font = `${captionFontWeight} ${captionFontSize}px ${CAPTION_FONT_FAMILY}`;
+          const maxTextWidth = canvas.width - (selectedPadding.value * 2) - captionFontSize;
+          captionLines = wrapText(caption, maxTextWidth);
+          captionTotalHeight = captionLines.length * lineHeight + captionPadding;
+        }
+
         const availableWidth = canvas.width - (selectedPadding.value * 2);
-        const availableHeight = canvas.height - (selectedPadding.value * 2);
+        const availableHeight = canvas.height - (selectedPadding.value * 2) - captionTotalHeight;
 
         const imgRatio = img.width / img.height;
         const availableRatio = availableWidth / availableHeight;
@@ -240,8 +284,15 @@ export default function App() {
           drawWidth = availableHeight * imgRatio;
         }
 
-        const drawX = (canvas.width - drawWidth) / 2;
-        const drawY = (canvas.height - drawHeight) / 2;
+        let drawX = (canvas.width - drawWidth) / 2;
+        let drawY: number;
+        if (caption && captionPosition === 'above') {
+          drawY = selectedPadding.value + captionTotalHeight + (availableHeight - drawHeight) / 2;
+        } else if (caption && captionPosition === 'below') {
+          drawY = selectedPadding.value + (availableHeight - drawHeight) / 2;
+        } else {
+          drawY = (canvas.height - drawHeight) / 2;
+        }
 
         if (selectedElevation.value > 0) {
           ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
@@ -267,6 +318,29 @@ export default function App() {
         ctx.drawImage(img, drawX, drawY, drawWidth, drawHeight);
         ctx.restore();
 
+        // Draw caption text
+        if (caption && captionLines.length > 0) {
+          ctx.shadowColor = 'transparent';
+          ctx.shadowBlur = 0;
+          ctx.shadowOffsetX = 0;
+          ctx.shadowOffsetY = 0;
+          ctx.font = `${captionFontWeight} ${captionFontSize}px ${CAPTION_FONT_FAMILY}`;
+          ctx.fillStyle = captionColor;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'top';
+
+          let textStartY: number;
+          if (captionPosition === 'above') {
+            textStartY = drawY - captionTotalHeight + captionPadding * 0.25;
+          } else {
+            textStartY = drawY + drawHeight + captionPadding * 0.5;
+          }
+
+          for (let i = 0; i < captionLines.length; i++) {
+            ctx.fillText(captionLines[i], canvas.width / 2, textStartY + i * lineHeight);
+          }
+        }
+
         resolve(canvas.toDataURL('image/png'));
       };
       img.onerror = () => reject(new Error('Failed to load image'));
@@ -281,14 +355,19 @@ export default function App() {
     }
   };
 
+  const trackDownload = (count: number, type: 'single' | 'zip') => {
+    (window as any).gtag?.('event', 'image_download', { count, type });
+  };
+
   const handleDownload = async () => {
     if (!activeImage) return;
-    const dataUrl = await renderImageToCanvas(activeImage);
+    const dataUrl = await renderImageToCanvas(activeImage, captionTexts[activeImageIndex]);
     const baseName = customFileName.trim() || `screenshot-${selectedSize.width}x${selectedSize.height}`;
     const link = document.createElement('a');
     link.download = `${baseName}.png`;
     link.href = dataUrl;
     link.click();
+    trackDownload(1, 'single');
     triggerDonationToast();
   };
 
@@ -300,12 +379,13 @@ export default function App() {
       const zip = new JSZip();
       const baseName = customFileName.trim() || `screenshot-${selectedSize.width}x${selectedSize.height}`;
       for (let i = 0; i < uploadedImages.length; i++) {
-        const dataUrl = await renderImageToCanvas(uploadedImages[i]);
+        const dataUrl = await renderImageToCanvas(uploadedImages[i], captionTexts[i]);
         const base64 = dataUrl.split(',')[1];
         zip.file(`${baseName}-${i + 1}.png`, base64, { base64: true });
       }
       const blob = await zip.generateAsync({ type: 'blob' });
       saveAs(blob, `${baseName}.zip`);
+      trackDownload(uploadedImages.length, 'zip');
       triggerDonationToast();
     } catch {
       setError('Failed to generate ZIP. Please try again.');
@@ -320,6 +400,15 @@ export default function App() {
       setActiveImageIndex(updated.length === 0 ? 0 : Math.min(activeImageIndex, updated.length - 1));
       return updated;
     });
+    setCaptionTexts((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const handleCaptionChange = (index: number, text: string) => {
+    setCaptionTexts((prev) => {
+      const updated = [...prev];
+      updated[index] = text;
+      return updated;
+    });
   };
 
   const activeSizes: Size[] =
@@ -332,9 +421,7 @@ export default function App() {
       {/* Sidebar */}
       <div className="w-full md:w-80 bg-white border-r border-neutral-200 flex flex-col h-screen overflow-y-auto shrink-0">
         <div className="p-6 border-b border-neutral-200">
-          <h1 className="text-xl font-semibold tracking-tight flex items-center gap-2">
-            App Store Screenshots
-          </h1>
+          <h1 className="text-xl font-semibold tracking-tight">App Store Screenshots</h1>
           <p className="text-sm text-neutral-500 mt-1">Create beautiful App Store screenshots</p>
         </div>
 
@@ -365,7 +452,7 @@ export default function App() {
                 <div className="flex items-center justify-between">
                   <span className="text-xs text-neutral-500">{uploadedImages.length} image{uploadedImages.length !== 1 ? 's' : ''}</span>
                   <button
-                    onClick={() => { setUploadedImages([]); setActiveImageIndex(0); }}
+                    onClick={() => { setUploadedImages([]); setActiveImageIndex(0); setCaptionTexts([]); }}
                     className="text-xs text-neutral-400 hover:text-red-500 transition-colors"
                   >
                     Clear all
@@ -558,6 +645,77 @@ export default function App() {
               )}
             </div>
 
+            {/* Caption */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-neutral-700 flex items-center gap-2">
+                <Type className="w-4 h-4" /> Caption
+              </label>
+              <textarea
+                rows={2}
+                disabled={uploadedImages.length === 0}
+                placeholder="Enter caption text…"
+                value={activeCaption}
+                onChange={(e) => handleCaptionChange(activeImageIndex, e.target.value)}
+                className="w-full px-3 py-2 border border-neutral-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none resize-none disabled:bg-neutral-100 disabled:text-neutral-400"
+              />
+              <div className="flex gap-1.5">
+                <button
+                  onClick={() => setCaptionPosition('above')}
+                  className={`flex-1 py-1.5 rounded-full text-xs font-medium transition-colors ${
+                    captionPosition === 'above'
+                      ? 'bg-indigo-600 text-white'
+                      : 'bg-neutral-100 text-neutral-600 hover:bg-neutral-200'
+                  }`}
+                >
+                  Above Image
+                </button>
+                <button
+                  onClick={() => setCaptionPosition('below')}
+                  className={`flex-1 py-1.5 rounded-full text-xs font-medium transition-colors ${
+                    captionPosition === 'below'
+                      ? 'bg-indigo-600 text-white'
+                      : 'bg-neutral-100 text-neutral-600 hover:bg-neutral-200'
+                  }`}
+                >
+                  Below Image
+                </button>
+              </div>
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-neutral-500">Font Size</span>
+                  <span className="text-xs text-neutral-500 font-mono">{captionFontSize}px</span>
+                </div>
+                <input
+                  type="range"
+                  min={24}
+                  max={128}
+                  value={captionFontSize}
+                  onChange={(e) => setCaptionFontSize(Number(e.target.value))}
+                  className="w-full accent-indigo-600"
+                />
+              </div>
+              <select
+                value={captionFontWeight}
+                onChange={(e) => setCaptionFontWeight(e.target.value)}
+                className="w-full px-3 py-2 border border-neutral-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500"
+              >
+                <option value="400">Regular</option>
+                <option value="500">Medium</option>
+                <option value="600">Semibold</option>
+                <option value="bold">Bold</option>
+                <option value="900">Black</option>
+              </select>
+              <div className="flex items-center gap-2">
+                <input
+                  type="color"
+                  value={captionColor}
+                  onChange={(e) => setCaptionColor(e.target.value)}
+                  className="w-8 h-8 rounded cursor-pointer border border-neutral-300"
+                />
+                <span className="text-xs text-neutral-500 font-mono uppercase">{captionColor}</span>
+              </div>
+            </div>
+
             {/* Padding */}
             <div className="space-y-2">
               <label className="text-sm font-medium text-neutral-700 flex items-center gap-2">
@@ -671,6 +829,25 @@ export default function App() {
 
       {/* Main Preview Area */}
       <div className="flex-1 bg-neutral-100 p-8 flex items-center justify-center overflow-hidden relative">
+        {/* Top-right nav */}
+        <div className="absolute top-4 right-5 flex items-center gap-4">
+          <a
+            href="https://github.com/dnyantra/StoreScreenshots"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1.5 text-sm text-neutral-500 hover:text-neutral-900 transition-colors"
+          >
+            <Github className="w-4 h-4" /> Star
+          </a>
+          <a
+            href="https://dnyantra.com"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-sm text-neutral-500 hover:text-neutral-900 transition-colors"
+          >
+            dnyantra.com
+          </a>
+        </div>
         {/* Preview Container */}
         <div
           className="relative rounded-xl overflow-hidden shadow-sm transition-all duration-500 flex items-center justify-center"
@@ -690,19 +867,51 @@ export default function App() {
                 width: '100%',
                 height: '100%',
                 display: 'flex',
+                flexDirection: 'column',
                 alignItems: 'center',
                 justifyContent: 'center'
               }}
             >
+              {activeCaption && captionPosition === 'above' && (
+                <p style={{
+                  fontFamily: CAPTION_FONT_FAMILY,
+                  fontSize: `${captionFontSize / 4}px`,
+                  fontWeight: captionFontWeight,
+                  color: captionColor,
+                  textAlign: 'center',
+                  margin: 0,
+                  paddingBottom: `${captionFontSize / 8}px`,
+                  lineHeight: 1.2,
+                  wordBreak: 'break-word',
+                  maxWidth: '90%',
+                  whiteSpace: 'pre-wrap',
+                }}>{activeCaption}</p>
+              )}
               <img
                 src={activeImage}
                 alt="Preview"
-                className="max-w-full max-h-full object-contain transition-all duration-300"
+                className="max-w-full object-contain transition-all duration-300"
                 style={{
+                  maxHeight: activeCaption ? '80%' : '100%',
                   borderRadius: `${selectedBorderRadius.value}px`,
                   boxShadow: selectedElevation.value > 0 ? `0 ${selectedElevation.value / 2}px ${selectedElevation.value}px rgba(0,0,0,0.4)` : 'none'
                 }}
               />
+              {activeCaption && captionPosition === 'below' && (
+                <p style={{
+                  fontFamily: CAPTION_FONT_FAMILY,
+                  fontSize: `${captionFontSize / 4}px`,
+                  fontWeight: captionFontWeight,
+                  color: captionColor,
+                  textAlign: 'center',
+                  margin: 0,
+                  paddingTop: `${captionFontSize / 8}px`,
+                  lineHeight: 1.2,
+                  wordBreak: 'break-word',
+                  maxWidth: '90%',
+                  whiteSpace: 'pre-wrap',
+                }}>{activeCaption}</p>
+              )}
             </div>
           ) : (
             <div className="text-center text-white/70 flex flex-col items-center">
